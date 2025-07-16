@@ -10,6 +10,7 @@
     "next": "latest",
     "react": "latest",
     "react-dom": "latest",
-    "openai": "latest"
+    "openai": "latest",
+    "vosk-browser": "latest"
   }
 }
