@@ -1,68 +1,74 @@
-// pages/index.js
-import { useEffect, useRef, useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import { createModel, createWorker } from 'vosk-browser';
 
 export default function Home() {
-  const [listening, setListening] = useState(false);
-  const recognitionRef = useRef(null);
+  const [recording, setRecording] = useState(false);
   const [transcript, setTranscript] = useState('');
+  const [worker, setWorker] = useState(null);
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
 
   useEffect(() => {
-    if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-      alert('Tu navegador no soporta Speech Recognition API');
-      return;
+    // Inicializar Vosk worker
+    async function initVosk() {
+      const model = await createModel('/vosk-model-small');
+      const w = await createWorker(model);
+      setWorker(w);
     }
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    const recognition = new SpeechRecognition();
-    recognition.lang = 'es-ES';
-    recognition.continuous = true;
-    recognition.interimResults = false;
-
-    recognition.onresult = (event) => {
-      const last = event.results.length - 1;
-      const text = event.results[last][0].transcript;
-      setTranscript(text);
-      sendToAI(text);
+    initVosk();
+    return () => {
+      if (worker) worker.terminate();
     };
-
-    recognitionRef.current = recognition;
   }, []);
 
-  function toggleListening() {
-    if (listening) {
-      recognitionRef.current.stop();
-      setListening(false);
-    } else {
-      recognitionRef.current.start();
-      setListening(true);
-    }
-  }
+  const startRecording = async () => {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const recorder = new MediaRecorder(stream);
+    audioChunksRef.current = [];
 
-  async function sendToAI(text) {
-    const res = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: text })
-    });
-    const data = await res.json();
-    speak(data.reply);
-  }
+    recorder.ondataavailable = event => audioChunksRef.current.push(event.data);
+    recorder.onstop = async () => {
+      const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+      const arrayBuffer = await blob.arrayBuffer();
+      const result = await worker.postMessage({ command: 'recognize', data: new Uint8Array(arrayBuffer) });
+      const text = result.text;
+      setTranscript(text);
 
-  function speak(text) {
-    if (!('speechSynthesis' in window)) {
-      alert('Tu navegador no soporta Speech Synthesis API');
-      return;
-    }
+      // Llamada a Gemini API
+      const chatRes = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: text })
+      });
+      const { reply } = await chatRes.json();
+      speak(reply);
+    };
+
+    recorder.start();
+    mediaRecorderRef.current = recorder;
+    setRecording(true);
+  };
+
+  const stopRecording = () => {
+    mediaRecorderRef.current.stop();
+    setRecording(false);
+  };
+
+  const speak = text => {
     const utterance = new SpeechSynthesisUtterance(text);
     const voices = window.speechSynthesis.getVoices();
-    if (voices.length > 0) utterance.voice = voices[0];
+    if (voices.length) utterance.voice = voices[0];
     window.speechSynthesis.speak(utterance);
-  }
+  };
 
   return (
     <div className="p-4">
-      <h1 className="text-xl font-bold mb-4">Asistente de Voz</h1>
-      <button onClick={toggleListening} className="p-2 bg-blue-500 text-white rounded">
-        {listening ? 'Detener' : 'Hablar'}
+      <h1 className="text-xl font-bold mb-4">Asistente de Voz (STT Local)</h1>
+      <button
+        onClick={recording ? stopRecording : startRecording}
+        className="p-2 bg-blue-500 text-white rounded"
+      >
+        {recording ? 'Detener grabación' : 'Empezar grabación'}
       </button>
       <p className="mt-4">Transcripción: {transcript}</p>
     </div>
